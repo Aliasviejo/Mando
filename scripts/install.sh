@@ -2,14 +2,14 @@
 # Installs the app and its audio driver (needs your password), then restarts CoreAudio.
 #
 #   ./scripts/install.sh                  # builds if needed, installs build/Mando.app
-#   ./scripts/install.sh ~/Downloads/Mando.app   # installs a downloaded release
+#   bash install.sh ~/Downloads/Mando.app        # installs a downloaded release
 #
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
 if [[ $# -gt 0 ]]; then
-  SRC="$1"
+  SRC="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 else
+  cd "$(dirname "$0")/.."
   SRC=build/Mando.app
   [[ -d "$SRC" ]] || ./scripts/build.sh
 fi
