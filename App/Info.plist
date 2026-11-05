@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>es</string>
+	<key>CFBundleExecutable</key>
+	<string>Mando</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.aliasviejo.mando</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Mando</string>
+	<key>CFBundleDisplayName</key>
+	<string>Mando</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Mando lee el audio de su propio dispositivo virtual para enviarlo a tu monitor o TV con el volumen aplicado. No graba ni accede a tu micrófono.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© Aliasviejo. MIT License.</string>
+</dict>
+</plist>
