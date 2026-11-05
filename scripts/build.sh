@@ -1,8 +1,10 @@
 #!/bin/bash
-# Builds build/Mando.app and build/Mando.driver (universal: arm64 + x86_64).
+# Builds build/Mando.app (universal: arm64 + x86_64). The audio driver ships
+# inside it, at Contents/PlugIns/Mando.driver; install.sh copies it to HAL.
 #
 #   ./scripts/build.sh                    # ad-hoc signed, for local testing
-#   SIGN_ID="Developer ID Application: …" ./scripts/build.sh   # release signing
+#   SIGN_ID="Developer ID Application: …" ./scripts/build.sh   # cert in the keychain
+#   ./scripts/release.sh                  # Developer ID in the cloud + notarization
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -12,27 +14,28 @@ SIGN_ID="${SIGN_ID:--}"
 MIN_OS=14.0
 ARCHS=(arm64 x86_64)
 OUT=build
+APP="$OUT/Mando.app/Contents"
 rm -rf "$OUT/Mando.app" "$OUT/Mando.driver" "$OUT/obj"
 mkdir -p "$OUT/obj"
 
 sign() { # path [entitlements]
-  local args=(--force --timestamp --options runtime --sign "$SIGN_ID")
-  [[ "$SIGN_ID" == "-" ]] && args=(--force --sign -)
+  # Hardened runtime also when ad-hoc, so release.sh can re-sign this build as is.
+  local args=(--force --options runtime --sign "$SIGN_ID")
+  [[ "$SIGN_ID" != "-" ]] && args+=(--timestamp)
   [[ $# -gt 1 ]] && args+=(--entitlements "$2")
   codesign "${args[@]}" "$1"
 }
 
 echo "==> Driver"
-DRV="$OUT/Mando.driver/Contents"
+DRV="$APP/PlugIns/Mando.driver/Contents"
 mkdir -p "$DRV/MacOS"
 clang -std=c11 -O2 -Wall -Wextra -mmacosx-version-min=$MIN_OS ${ARCHS[@]/#/-arch } \
   -bundle -framework CoreFoundation -framework CoreAudio \
   Driver/MandoDriver.c -o "$DRV/MacOS/Mando"
 sed "s/__VERSION__/$VERSION/g" Driver/Info.plist > "$DRV/Info.plist"
-sign "$OUT/Mando.driver"
+sign "$APP/PlugIns/Mando.driver"
 
 echo "==> App"
-APP="$OUT/Mando.app/Contents"
 mkdir -p "$APP/MacOS" "$APP/Resources"
 BIN=()
 for arch in "${ARCHS[@]}"; do
@@ -51,4 +54,4 @@ sed "s/__VERSION__/$VERSION/g" App/Info.plist > "$APP/Info.plist"
 [[ -f App/AppIcon.icns ]] && cp App/AppIcon.icns "$APP/Resources/" || true
 sign "$OUT/Mando.app" App/Mando.entitlements
 
-echo "==> Done: $OUT/Mando.app, $OUT/Mando.driver (v$VERSION, signed with: $SIGN_ID)"
+echo "==> Done: $OUT/Mando.app with its driver (v$VERSION, signed with: $SIGN_ID)"

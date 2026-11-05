@@ -28,7 +28,7 @@ Existing workarounds change the volume **on the monitor itself** over DDC. That 
 ## Install
 
 1. Download `Mando.zip` from [Releases](../../releases) and unzip it.
-2. Run `scripts/install.sh`. It asks for your password to install the audio driver in `/Library/Audio/Plug-Ins/HAL` and restarts CoreAudio.
+2. Run `scripts/install.sh path/to/Mando.app`. It asks for your password to install the audio driver (shipped inside the app) in `/Library/Audio/Plug-Ins/HAL` and restarts CoreAudio.
 3. Grant the permissions macOS asks for:
    - **Accessibility**, to read the brightness and volume keys.
    - **Microphone**, because Mando reads its *own* virtual device to forward the audio. It never touches your real microphone.
@@ -50,10 +50,10 @@ You need Xcode (or the Command Line Tools).
 ./scripts/install.sh
 ```
 
-Release build, signed and notarized:
+Release build, signed with Developer ID, notarized and stapled (requirements in the script header):
 
 ```bash
-SIGN_ID="Developer ID Application: Your Name (TEAMID)" VERSION=0.1.0 ./scripts/build.sh
+VERSION=0.1.0 ./scripts/release.sh   # → build/release/Mando-0.1.0.zip
 ```
 
 ## How it works
@@ -89,7 +89,7 @@ Cuando la Mac manda el audio por HDMI o DisplayPort, macOS bloquea el volumen y 
 
 ### Instalar
 1. Descarga `Mando.zip` de [Releases](../../releases).
-2. Ejecuta `scripts/install.sh`. Te pide la contraseña para instalar el driver de audio.
+2. Ejecuta `scripts/install.sh ruta/a/Mando.app`. Te pide la contraseña para instalar el driver de audio, que viene dentro de la app.
 3. Acepta los permisos de **Accesibilidad** (para las teclas) y **Micrófono**. Mando solo lee su propio dispositivo virtual; nunca accede a tu micrófono real.
 
 Si usas MonitorControl, FineTune o SoundSource, ciérralas para que no peleen por las teclas.
