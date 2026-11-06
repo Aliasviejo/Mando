@@ -2,7 +2,7 @@
 // keyboards send them as "system defined" media key events; some send the
 // brightness keys as keycodes 144/145, and PC layouts offer F14/F15). Volume keys are
 // only taken while Mando is the output, so Mando can show the classic
-// bottom-centre bezel; otherwise macOS handles them as usual.
+// volume indicator; otherwise macOS handles them as usual.
 //
 // SPDX-License-Identifier: MIT
 

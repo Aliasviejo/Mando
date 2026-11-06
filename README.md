@@ -16,7 +16,7 @@ Existing workarounds change the volume **on the monitor itself** over DDC. That 
 
 ## What Mando does
 
-- **Volume, the Mac way.** Mando installs a tiny virtual audio device with a real volume control. Audio goes through it and on to your HDMI device. The volume keys change the Mac's volume and show the macOS volume indicator, in the same place and style as on a MacBook (top right on macOS 26 and later). The monitor's volume stays where you set it and acts as a ceiling, and the monitor never shows its own bar.
+- **Volume, the Mac way.** Mando installs a tiny virtual audio device with a real volume control. Audio goes through it and on to your HDMI device. The volume keys change the Mac's volume and show the macOS volume indicator. The monitor's volume stays where you set it and acts as a ceiling, and the monitor never shows its own bar.
 - **Brightness over DDC/CI.** The brightness keys change the monitor's real backlight and show the macOS brightness indicator. Hold <kbd>⇧</kbd><kbd>⌥</kbd> for finer steps.
 - **Automatic.** Pick your monitor as the output and Mando wraps it. Pick speakers or AirPods (devices that already have volume) and Mando gets out of the way.
 - **Menu bar.** Volume and brightness sliders, an output picker and launch at login.
@@ -112,7 +112,7 @@ Thanks to [MonitorControl](https://github.com/MonitorControl/MonitorControl) (MI
 Cuando la Mac manda el audio por HDMI o DisplayPort, macOS bloquea el volumen: las teclas muestran un parlante tachado y no puedes subir ni bajar el volumen del monitor o la TV desde la Mac. Las teclas de brillo tampoco funcionan con la mayoría de monitores (LG, Dell, Samsung, BenQ…). Las apps que existen cambian el volumen **del monitor** por DDC. Por eso el monitor muestra su propio indicador encima cada vez.
 
 ### Qué hace Mando
-- **Volumen como en la Mac:** un dispositivo de audio virtual con volumen real. Las teclas mueven el volumen de macOS con su indicador, en el mismo lugar y estilo que en una MacBook (arriba a la derecha desde macOS 26). El volumen del monitor queda fijo como tope, y el monitor no muestra su indicador.
+- **Volumen como en la Mac:** un dispositivo de audio virtual con volumen real. Las teclas mueven el volumen de macOS con el indicador de macOS. El volumen del monitor queda fijo como tope, y el monitor no muestra su indicador.
 - **Brillo por DDC/CI:** las teclas de brillo cambian el brillo real del monitor, con el indicador de macOS. Con <kbd>⇧</kbd><kbd>⌥</kbd> los pasos son más finos.
 - **Automático:** si eliges el monitor como salida, Mando se encarga. Con parlantes o AirPods se hace a un lado.
 
