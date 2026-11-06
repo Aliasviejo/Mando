@@ -9,7 +9,7 @@
 #   - An App Store Connect API key for notarytool, in these variables:
 #     APPSTORECONNECT_PRIVATE_KEY_PATH, APPSTORECONNECT_KEY_ID, APPSTORECONNECT_ISSUER_ID
 #
-# Output: build/release/$VERSION/Mando.app (stapled) and Mando-$VERSION.zip; other versions are left alone
+# Output: build/release/$VERSION/Mando.app (stapled) and Mando.zip; other versions are left alone
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -54,7 +54,7 @@ xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$OUT" \
   -exportOptionsPlist ExportOptions.plist -allowProvisioningUpdates -quiet
 
 echo "==> Notarize"
-ZIP="$OUT/Mando-$VERSION.zip"
+ZIP="$OUT/Mando.zip"   # fixed name: releases/latest/download/Mando.zip always works
 ditto -c -k --keepParent "$OUT/Mando.app" "$ZIP"
 xcrun notarytool submit "$ZIP" --wait \
   --key "$APPSTORECONNECT_PRIVATE_KEY_PATH" \

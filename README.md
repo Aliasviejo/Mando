@@ -16,8 +16,8 @@ Existing workarounds change the volume **on the monitor itself** over DDC. That 
 
 ## What Mando does
 
-- **Volume, the Mac way.** Mando installs a tiny virtual audio device with a real volume control. Audio goes through it and on to your HDMI device. The volume keys change the Mac's volume and show the classic macOS bezel. The monitor's volume stays where you set it and acts as a ceiling, and the monitor never shows its own bar.
-- **Brightness over DDC/CI.** The brightness keys change the monitor's real backlight and show the native macOS bezel. Hold <kbd>⇧</kbd><kbd>⌥</kbd> for finer steps.
+- **Volume, the Mac way.** Mando installs a tiny virtual audio device with a real volume control. Audio goes through it and on to your HDMI device. The volume keys change the Mac's volume and show the macOS volume indicator, in the same place and style as on a MacBook (top right on macOS 26 and later). The monitor's volume stays where you set it and acts as a ceiling, and the monitor never shows its own bar.
+- **Brightness over DDC/CI.** The brightness keys change the monitor's real backlight and show the macOS brightness indicator. Hold <kbd>⇧</kbd><kbd>⌥</kbd> for finer steps.
 - **Automatic.** Pick your monitor as the output and Mando wraps it. Pick speakers or AirPods (devices that already have volume) and Mando gets out of the way.
 - **Menu bar.** Volume and brightness sliders, an output picker and launch at login.
 
@@ -39,7 +39,7 @@ A keyboard that doesn't work? [Open an issue](../../issues) with its model.
 
 ## Install
 
-1. Download `Mando-<version>.zip` from the latest [release](../../releases/latest), unzip it and move **Mando** to Applications. It is signed with Developer ID and notarized by Apple.
+1. Download [Mando.zip](https://github.com/Aliasviejo/Mando/releases/latest/download/Mando.zip), unzip it and move **Mando** to Applications. It is signed with Developer ID and notarized by Apple.
 2. Open Mando. It offers to install its audio driver: macOS asks for your password once.
 3. Grant the permissions macOS asks for:
    - **Accessibility**, to read the brightness and volume keys.
@@ -48,6 +48,27 @@ A keyboard that doesn't work? [Open an issue](../../issues) with its model.
 If you use MonitorControl, FineTune, SoundSource or similar apps, quit them so they don't fight over the keys.
 
 To uninstall, choose **Desinstalar Mando…** in the menu bar. It removes the driver and the app.
+
+### From Terminal
+
+```bash
+curl -fsSL https://github.com/Aliasviejo/Mando/releases/latest/download/Mando.zip -o /tmp/Mando.zip \
+  && ditto -x -k /tmp/Mando.zip /Applications && open /Applications/Mando.app
+```
+
+## FAQ
+
+**Why can't I change the volume on my HDMI or DisplayPort monitor from my Mac?**
+macOS sends digital audio over HDMI/DisplayPort at a fixed level and leaves volume to the monitor, so the volume keys show a crossed-out speaker. Mando adds a virtual audio device with its own volume control in front of the monitor, so the keys work again.
+
+**Why don't the brightness keys work on my external monitor?**
+macOS only controls the brightness of Apple displays. Most other monitors (LG, Dell, Samsung, BenQ…) accept brightness commands over DDC/CI, which Mando sends when you press the keys. Turn on DDC/CI in the monitor's menu if it's off.
+
+**Does it work with my Logitech keyboard?**
+Yes, without Logi Options+. See [Keyboards](#keyboards).
+
+**Is it free? Is it safe?**
+Free and open source (MIT). The app is signed with Developer ID and notarized by Apple. It reads only its own virtual device, never your microphone, and has no network access.
 
 ## Build from source
 
@@ -61,7 +82,7 @@ You need Xcode (or the Command Line Tools).
 Release build, signed with Developer ID, notarized and stapled (requirements in the script header):
 
 ```bash
-VERSION=0.2.0 ./scripts/release.sh   # → build/release/0.2.0/Mando-0.2.0.zip
+VERSION=0.2.1 ./scripts/release.sh   # → build/release/0.2.1/Mando.zip
 ```
 
 ## How it works
@@ -91,7 +112,7 @@ Thanks to [MonitorControl](https://github.com/MonitorControl/MonitorControl) (MI
 Cuando la Mac manda el audio por HDMI o DisplayPort, macOS bloquea el volumen: las teclas muestran un parlante tachado y no puedes subir ni bajar el volumen del monitor o la TV desde la Mac. Las teclas de brillo tampoco funcionan con la mayoría de monitores (LG, Dell, Samsung, BenQ…). Las apps que existen cambian el volumen **del monitor** por DDC. Por eso el monitor muestra su propio indicador encima cada vez.
 
 ### Qué hace Mando
-- **Volumen como en la Mac:** un dispositivo de audio virtual con volumen real. Las teclas mueven el volumen de macOS con su indicador clásico. El volumen del monitor queda fijo como tope, y el monitor no muestra su indicador.
+- **Volumen como en la Mac:** un dispositivo de audio virtual con volumen real. Las teclas mueven el volumen de macOS con su indicador, en el mismo lugar y estilo que en una MacBook (arriba a la derecha desde macOS 26). El volumen del monitor queda fijo como tope, y el monitor no muestra su indicador.
 - **Brillo por DDC/CI:** las teclas de brillo cambian el brillo real del monitor, con el indicador de macOS. Con <kbd>⇧</kbd><kbd>⌥</kbd> los pasos son más finos.
 - **Automático:** si eliges el monitor como salida, Mando se encarga. Con parlantes o AirPods se hace a un lado.
 
@@ -104,8 +125,29 @@ Funciona sin Logi Options+ ni otro programa del teclado.
 ¿Tu teclado no funciona? [Abre un issue](../../issues) con el modelo.
 
 ### Instalar
-1. Descarga `Mando-<versión>.zip` del último [release](../../releases/latest), descomprímelo y mueve **Mando** a Aplicaciones. Está firmada con Developer ID y notarizada por Apple.
+1. Descarga [Mando.zip](https://github.com/Aliasviejo/Mando/releases/latest/download/Mando.zip), descomprímelo y mueve **Mando** a Aplicaciones. Está firmada con Developer ID y notarizada por Apple.
 2. Abre Mando. Te ofrece instalar su driver de audio y macOS te pide la contraseña una vez.
 3. Acepta los permisos de **Accesibilidad** (para las teclas) y **Micrófono**. Mando solo lee su propio dispositivo virtual; nunca accede a tu micrófono real.
 
 Si usas MonitorControl, FineTune o SoundSource, ciérralas para que no peleen por las teclas. Para desinstalar, elige **Desinstalar Mando…** en la barra de menú.
+
+Desde Terminal:
+
+```bash
+curl -fsSL https://github.com/Aliasviejo/Mando/releases/latest/download/Mando.zip -o /tmp/Mando.zip \
+  && ditto -x -k /tmp/Mando.zip /Applications && open /Applications/Mando.app
+```
+
+### Preguntas frecuentes
+
+**¿Por qué no puedo cambiar el volumen de mi monitor HDMI o DisplayPort desde la Mac?**
+macOS manda el audio digital por HDMI o DisplayPort a un nivel fijo y deja el volumen al monitor, por eso las teclas muestran un parlante tachado. Mando pone delante del monitor un dispositivo de audio virtual con volumen propio, y las teclas vuelven a funcionar.
+
+**¿Por qué no funcionan las teclas de brillo con mi monitor externo?**
+macOS solo controla el brillo de las pantallas de Apple. La mayoría de los otros monitores (LG, Dell, Samsung, BenQ…) aceptan órdenes de brillo por DDC/CI, y Mando las manda al presionar las teclas. Si está apagado, activa DDC/CI en el menú del monitor.
+
+**¿Funciona con mi teclado Logitech?**
+Sí, sin Logi Options+. Mira la sección [Teclados](#teclados).
+
+**¿Es gratis? ¿Es segura?**
+Gratis y de código abierto (MIT). Está firmada con Developer ID y notarizada por Apple. Solo lee su propio dispositivo virtual, nunca tu micrófono, y no se conecta a internet.
