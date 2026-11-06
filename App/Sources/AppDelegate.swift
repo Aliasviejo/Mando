@@ -59,6 +59,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                           name: NSWorkspace.didWakeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
+
+        if DriverInstaller.needsInstall {
+            DispatchQueue.main.async { [weak self] in self?.offerDriverInstall() }
+        }
+    }
+
+    // MARK: Driver
+
+    private func offerDriverInstall() {
+        let update = DriverInstaller.isInstalled
+        let alert = NSAlert()
+        alert.messageText = update ? "Actualizar el driver de audio" : "Instalar el driver de audio"
+        alert.informativeText = "Mando usa un dispositivo de audio virtual para que las teclas de volumen funcionen con tu monitor o TV. macOS te pedirá tu contraseña y el audio se cortará un momento."
+        alert.addButton(withTitle: update ? "Actualizar" : "Instalar")
+        alert.addButton(withTitle: "Ahora no")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        installDriver()
+    }
+
+    @objc private func installDriver() {
+        audio.stop()
+        guard DriverInstaller.install() else { audio.start(); return }
+        relaunch()
+    }
+
+    /// CoreAudio restarts after a driver change; a fresh process picks up the new device cleanly.
+    private func relaunch() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+        }
+    }
+
+    @objc private func uninstallMando() {
+        let alert = NSAlert()
+        alert.messageText = "¿Desinstalar Mando?"
+        alert.informativeText = "Se quitarán el driver de audio y la app. macOS te pedirá tu contraseña."
+        alert.addButton(withTitle: "Desinstalar")
+        alert.addButton(withTitle: "Cancelar")
+        alert.alertStyle = .warning
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        audio.stop()
+        guard DriverInstaller.uninstall() else { audio.start(); return }
+        try? SMAppService.mainApp.unregister()
+        NSWorkspace.shared.recycle([Bundle.main.bundleURL]) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -158,7 +210,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             menu.addItem(note(status))
         } else {
-            menu.addItem(note("El driver de audio Mando no está instalado"))
+            menu.addItem(note("Falta el driver de audio de Mando"))
+            if DriverInstaller.bundledURL != nil {
+                let item = NSMenuItem(title: "Instalar driver de audio…", action: #selector(installDriver), keyEquivalent: "")
+                item.target = self
+                menu.addItem(item)
+            }
         }
 
         menu.addItem(.separator())
@@ -194,6 +251,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(login)
 
         menu.addItem(.separator())
+        let uninstall = NSMenuItem(title: "Desinstalar Mando…", action: #selector(uninstallMando), keyEquivalent: "")
+        uninstall.target = self
+        menu.addItem(uninstall)
         let quit = NSMenuItem(title: "Salir de Mando", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
     }

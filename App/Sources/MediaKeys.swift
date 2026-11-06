@@ -1,5 +1,6 @@
 // Intercepts the keyboard brightness and volume keys (Apple and most Logitech
-// keyboards send them as "system defined" media key events). Volume keys are
+// keyboards send them as "system defined" media key events; some send the
+// brightness keys as keycodes 144/145, and PC layouts offer F14/F15). Volume keys are
 // only taken while Mando is the output, so Mando can show the classic
 // bottom-centre bezel; otherwise macOS handles them as usual.
 //
@@ -53,10 +54,15 @@ final class MediaKeys {
         let fine: Bool
         if type == .keyDown || type == .keyUp {
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            // F14/F15 are Scroll Lock/Pause on PC-layout keyboards (Logitech K120,
+            // MX Keys in Windows mode…); macOS uses them for brightness too.
             switch keyCode {
-            case 144: key = .brightnessUp
-            case 145: key = .brightnessDown
+            case 144, 113: key = .brightnessUp
+            case 145, 107: key = .brightnessDown
             default: return Unmanaged.passUnretained(event)
+            }
+            if (keyCode == 107 || keyCode == 113) && !event.flags.intersection([.maskCommand, .maskControl]).isEmpty {
+                return Unmanaged.passUnretained(event)   // someone's shortcut, not a brightness key
             }
             isDown = (type == .keyDown)
             fine = event.flags.contains(.maskShift) && event.flags.contains(.maskAlternate)
