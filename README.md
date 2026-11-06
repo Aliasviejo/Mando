@@ -61,7 +61,7 @@ You need Xcode (or the Command Line Tools).
 Release build, signed with Developer ID, notarized and stapled (requirements in the script header):
 
 ```bash
-VERSION=0.2.0 ./scripts/release.sh   # → build/release/Mando-0.2.0.zip
+VERSION=0.2.0 ./scripts/release.sh   # → build/release/0.2.0/Mando-0.2.0.zip
 ```
 
 ## How it works

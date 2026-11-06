@@ -9,7 +9,7 @@
 #   - An App Store Connect API key for notarytool, in these variables:
 #     APPSTORECONNECT_PRIVATE_KEY_PATH, APPSTORECONNECT_KEY_ID, APPSTORECONNECT_ISSUER_ID
 #
-# Output: build/release/Mando.app (stapled) and build/release/Mando-$VERSION.zip
+# Output: build/release/$VERSION/Mando.app (stapled) and Mando-$VERSION.zip; other versions are left alone
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,7 +17,7 @@ VERSION="${VERSION:-0.1.0}"
 : "${APPSTORECONNECT_PRIVATE_KEY_PATH:?set the App Store Connect API key variables (see header)}"
 : "${APPSTORECONNECT_KEY_ID:?}" "${APPSTORECONNECT_ISSUER_ID:?}"
 
-OUT=build/release
+OUT="build/release/$VERSION"
 ARCHIVE="$OUT/Mando.xcarchive"
 rm -rf "$OUT"
 
