@@ -1,7 +1,7 @@
 #!/bin/bash
 # Release build: Developer ID signed (cloud-managed certificate), notarized and stapled.
 #
-#   VERSION=0.1.0 ./scripts/release.sh
+#   VERSION=0.3.0 ./scripts/release.sh
 #
 # Needs:
 #   - Xcode signed in (Settings → Apple Accounts) with an account that has
@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-0.1.0}"
+: "${VERSION:?set VERSION, e.g. VERSION=0.3.0 ./scripts/release.sh}"
 : "${APPSTORECONNECT_PRIVATE_KEY_PATH:?set the App Store Connect API key variables (see header)}"
 : "${APPSTORECONNECT_KEY_ID:?}" "${APPSTORECONNECT_ISSUER_ID:?}"
 

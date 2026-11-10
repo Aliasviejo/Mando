@@ -4,8 +4,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import CoreGraphics
-import Foundation
+import AppKit
 import IOKit
 
 final class DDCDisplay {
@@ -17,8 +16,8 @@ final class DDCDisplay {
     let name: String
     let displayID: CGDirectDisplayID
     private let queue = DispatchQueue(label: "mando.ddc")
+    private let lock = NSLock()
     private var pendingBrightness: UInt16?
-    private var writing = false
 
     private(set) var maxBrightness: UInt16 = 100
     private(set) var brightness: UInt16 = 50
@@ -31,7 +30,9 @@ final class DDCDisplay {
 
     private static let savedBrightnessKey = "brightness"
 
-    /// First external display reachable over DDC. Many monitors (and Apple
+    /// First external display reachable over DDC (ponytail: one external
+    /// display; to grow, match each DCPAVServiceProxy to its CGDirectDisplayID
+    /// by EDID and keep a list). Many monitors (and Apple
     /// Silicon HDMI ports) accept DDC writes but return garbage on reads, so a
     /// failed read is not fatal: we fall back to the last value we set.
     static func findExternal() -> DDCDisplay? {
@@ -60,22 +61,24 @@ final class DDCDisplay {
 
     var normalizedBrightness: Float { Float(brightness) / Float(maxBrightness) }
 
-    /// Coalesces rapid changes (key repeat, slider drags) into the latest value.
+    /// Coalesces rapid changes (key repeat, slider drags): while a write is
+    /// queued, newer values replace it instead of piling up behind it.
     func setBrightness(normalized: Float) {
         let clamped = max(0, min(1, normalized))
         let value = UInt16((clamped * Float(maxBrightness)).rounded())
         brightness = value
         UserDefaults.standard.set(Double(clamped), forKey: Self.savedBrightnessKey)
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.pendingBrightness = value
-            guard !self.writing else { return }
-            self.writing = true
-            while let v = self.pendingBrightness {
-                self.pendingBrightness = nil
-                _ = self.write(Self.brightnessVCP, value: v)
+        let alreadyQueued = lock.withLock {
+            defer { pendingBrightness = value }
+            return pendingBrightness != nil
+        }
+        guard !alreadyQueued else { return }
+        queue.async { [self] in
+            let latest = lock.withLock {
+                defer { pendingBrightness = nil }
+                return pendingBrightness
             }
-            self.writing = false
+            if let latest { _ = write(Self.brightnessVCP, value: latest) }
         }
     }
 
@@ -120,14 +123,8 @@ final class DDCDisplay {
     }
 
     private static func displayName(_ id: CGDirectDisplayID) -> String? {
-        NSScreenName(for: id)
+        NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+        }?.localizedName
     }
-}
-
-import AppKit
-
-private func NSScreenName(for id: CGDirectDisplayID) -> String? {
-    NSScreen.screens.first {
-        ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
-    }?.localizedName
 }

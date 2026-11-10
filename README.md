@@ -41,9 +41,7 @@ A keyboard that doesn't work? [Open an issue](../../issues) with its model.
 
 1. Download [Mando.zip](https://github.com/Aliasviejo/Mando/releases/latest/download/Mando.zip), unzip it and move **Mando** to Applications. It is signed with Developer ID and notarized by Apple.
 2. Open Mando. It offers to install its audio driver: macOS asks for your password once.
-3. Grant the permissions macOS asks for:
-   - **Accessibility**, to read the brightness and volume keys.
-   - **Microphone**, because Mando reads its *own* virtual device to forward the audio. It never touches your real microphone.
+3. Grant the **Accessibility** permission macOS asks for, so Mando can read the brightness and volume keys.
 
 If you use MonitorControl, FineTune, SoundSource or similar apps, quit them so they don't fight over the keys.
 
@@ -68,7 +66,7 @@ macOS only controls the brightness of Apple displays. Most other monitors (LG, D
 Yes, without Logi Options+. See [Keyboards](#keyboards).
 
 **Is it free? Is it safe?**
-Free and open source (MIT). The app is signed with Developer ID and notarized by Apple. It reads only its own virtual device, never your microphone, and has no network access.
+Free and open source (MIT). The app is signed with Developer ID and notarized by Apple. It never records audio (it needs no microphone permission) and has no network access.
 
 ## Build from source
 
@@ -79,22 +77,28 @@ You need Xcode (or the Command Line Tools).
 ./scripts/install.sh        # or just open build/Mando.app
 ```
 
+The driver's playback and clock logic has a test that runs in simulated time:
+
+```bash
+clang -O2 -framework CoreFoundation -framework CoreAudio tests/forwarding_test.c -o build/forwarding_test && build/forwarding_test
+```
+
 Release build, signed with Developer ID, notarized and stapled (requirements in the script header):
 
 ```bash
-VERSION=0.2.1 ./scripts/release.sh   # → build/release/0.2.1/Mando.zip
+VERSION=0.3.0 ./scripts/release.sh   # → build/release/0.3.0/Mando.zip
 ```
 
 ## How it works
 
 ```
-apps ──▶ Mando (virtual device, volume applied) ──loopback──▶ Mando.app ──▶ HDMI monitor
-                          ▲                                    (private aggregate device,
-                 volume keys / macOS                            clock = monitor, drift-corrected)
+apps ──▶ Mando (virtual device, volume applied) ──▶ HDMI monitor
+                          ▲                 ▲
+                 volume keys / macOS        Mando.app chooses the monitor
 ```
 
-- `Driver/MandoDriver.c` is a CoreAudio AudioServerPlugIn. It publishes an output device with volume and mute controls and applies the gain to the mix. It loops the result back to its input side. It ships inside the app and `DriverInstaller.swift` copies it to `/Library/Audio/Plug-Ins/HAL`.
-- `App/Sources/AudioRouter.swift` builds a private aggregate device: the monitor is the clock master and Mando is drift-compensated. `App/Bridge/Router.c` copies the loopback into the monitor's output on the real-time thread.
+- `Driver/MandoDriver.c` is a CoreAudio AudioServerPlugIn. It publishes an output device with volume and mute controls, applies the gain to the mix and plays the result on the monitor, keeping its own clock in step with the monitor's. It has no input side, so nothing records. It ships inside the app and `DriverInstaller.swift` copies it to `/Library/Audio/Plug-Ins/HAL`.
+- `App/Sources/AudioRouter.swift` makes Mando the system output when the Mac plays on a fixed-volume device, and tells the driver which device to play on.
 - `App/Sources/DDC.swift` talks DDC/CI (VESA MCCS, VCP `0x10`) through `IOAVService`.
 - `App/Sources/MediaKeys.swift` is a `CGEventTap` that handles the media keys.
 
@@ -127,7 +131,7 @@ Funciona sin Logi Options+ ni otro programa del teclado.
 ### Instalar
 1. Descarga [Mando.zip](https://github.com/Aliasviejo/Mando/releases/latest/download/Mando.zip), descomprímelo y mueve **Mando** a Aplicaciones. Está firmada con Developer ID y notarizada por Apple.
 2. Abre Mando. Te ofrece instalar su driver de audio y macOS te pide la contraseña una vez.
-3. Acepta los permisos de **Accesibilidad** (para las teclas) y **Micrófono**. Mando solo lee su propio dispositivo virtual; nunca accede a tu micrófono real.
+3. Acepta el permiso de **Accesibilidad**, que Mando necesita para leer las teclas de brillo y volumen.
 
 Si usas MonitorControl, FineTune o SoundSource, ciérralas para que no peleen por las teclas. Para desinstalar, elige **Desinstalar Mando…** en la barra de menú.
 
@@ -150,4 +154,4 @@ macOS solo controla el brillo de las pantallas de Apple. La mayoría de los otro
 Sí, sin Logi Options+. Mira la sección [Teclados](#teclados).
 
 **¿Es gratis? ¿Es segura?**
-Gratis y de código abierto (MIT). Está firmada con Developer ID y notarizada por Apple. Solo lee su propio dispositivo virtual, nunca tu micrófono, y no se conecta a internet.
+Gratis y de código abierto (MIT). Está firmada con Developer ID y notarizada por Apple. Nunca graba audio (no pide permiso de Micrófono) y no se conecta a internet.

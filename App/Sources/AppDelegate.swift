@@ -14,7 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let volumeSlider = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let brightnessSlider = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
 
-    private static let brightnessSteps: Float = 16
+    /// Steps per key press across the whole range, like macOS; ⇧⌥ gives quarter steps.
+    private static let keySteps: Float = 16
+    private static let fineSteps = keySteps * 4
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -28,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         brightnessSlider.action = #selector(brightnessSliderMoved)
         brightnessSlider.isContinuous = true
 
-        audio.onChange = { [weak self] in self?.refreshSliders() }
+        audio.onChange = { [weak self] in self?.refreshControls() }
         audio.start()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -36,17 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Log.info(found.map { "DDC display: \($0.name) id=\($0.displayID)" } ?? "DDC display: none")
             DispatchQueue.main.async {
                 self?.display = found
-                self?.refreshSliders()
+                self?.refreshControls()
             }
         }
         Log.info("accessibility trusted: \(MediaKeys.hasAccessibility)")
 
         keys.handler = { [weak self] key, fine in
-            guard let self else { return false }
-            switch key {
-            case .brightnessUp, .brightnessDown: return self.handleBrightnessKey(key, fine: fine)
-            case .volumeUp, .volumeDown, .mute: return self.handleVolumeKey(key, fine: fine)
-            }
+            if key.isBrightness { self?.handleBrightnessKey(key, fine: fine) } else { self?.handleVolumeKey(key, fine: fine) }
         }
         if MediaKeys.hasAccessibility {
             keys.start()
@@ -55,9 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pollForAccessibility()
         }
 
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screensChanged),
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(displaysChanged),
                                                           name: NSWorkspace.didWakeNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
+        NotificationCenter.default.addObserver(self, selector: #selector(displaysChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
         if DriverInstaller.needsInstall {
@@ -124,34 +122,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func screensChanged() {
+    /// After a wake or a display change, give the display a moment, then find
+    /// it again for DDC and let the audio route catch up.
+    @objc private func displaysChanged() {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak self] in
             let found = DDCDisplay.findExternal()
-            DispatchQueue.main.async { self?.display = found; self?.refreshSliders() }
+            DispatchQueue.main.async {
+                self?.display = found
+                self?.audio.evaluate() // ends in refreshControls()
+            }
         }
     }
 
     // MARK: Brightness
 
-    private func handleBrightnessKey(_ key: MediaKeys.Key, fine: Bool) -> Bool {
-        guard let display else { Log.info("brightness key ignored: no DDC display"); return false }
-        let steps = fine ? Self.brightnessSteps * 4 : Self.brightnessSteps
-        var level = (display.normalizedBrightness * steps).rounded()
-        level += (key == .brightnessUp) ? 1 : -1
-        let value = max(0, min(1, level / steps))
+    private func handleBrightnessKey(_ key: MediaKeys.Key, fine: Bool) {
+        guard let display else { return }
+        let value = Self.step(display.normalizedBrightness, up: key == .brightnessUp, fine: fine)
         display.setBrightness(normalized: value)
-        showBrightnessOSD(value)
+        _ = MandoShowOSD(display.displayID, 1, UInt32((value * Self.fineSteps).rounded()), UInt32(Self.fineSteps))
         brightnessSlider.floatValue = value
-        return true
+    }
+
+    private static func step(_ value: Float, up: Bool, fine: Bool) -> Float {
+        let steps = fine ? fineSteps : keySteps
+        return max(0, min(1, ((value * steps).rounded() + (up ? 1 : -1)) / steps))
     }
 
     @objc private func brightnessSliderMoved() {
         display?.setBrightness(normalized: brightnessSlider.floatValue)
-    }
-
-    private func showBrightnessOSD(_ value: Float) {
-        guard let display else { return }
-        _ = MandoShowOSD(display.displayID, 1, UInt32((value * Self.brightnessSteps * 4).rounded()), UInt32(Self.brightnessSteps * 4))
     }
 
     // MARK: Volume
@@ -160,25 +159,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         audio.volume = volumeSlider.floatValue
     }
 
-    /// Only while Mando is the output; otherwise macOS handles the keys itself.
-    private func handleVolumeKey(_ key: MediaKeys.Key, fine: Bool) -> Bool {
-        guard audio.isActiveOutput else { return false }
+    private func handleVolumeKey(_ key: MediaKeys.Key, fine: Bool) {
+        guard audio.isActiveOutput else { return }
         var value = audio.volume
         if key == .mute {
             audio.muted.toggle()
         } else {
-            let steps = fine ? Self.brightnessSteps * 4 : Self.brightnessSteps
-            var level = (value * steps).rounded()
-            level += (key == .volumeUp) ? 1 : -1
-            value = max(0, min(1, level / steps))
+            value = Self.step(value, up: key == .volumeUp, fine: fine)
             audio.volume = value
             if audio.muted { audio.muted = false }
         }
         let muted = audio.muted || value == 0
-        let total = UInt32(Self.brightnessSteps * 4)
-        _ = MandoShowOSD(osdDisplayID, muted ? 4 : 3, muted ? 0 : UInt32((value * Float(total)).rounded()), total)
+        _ = MandoShowOSD(osdDisplayID, muted ? 4 : 3, muted ? 0 : UInt32((value * Self.fineSteps).rounded()), UInt32(Self.fineSteps))
         volumeSlider.floatValue = value
-        return true
     }
 
     /// Display the mouse is on, so the bezel shows where you're looking.
@@ -188,23 +181,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
     }
 
-    private func refreshSliders() {
+    /// Sliders, and which keys Mando takes: brightness with a DDC display,
+    /// volume only while Mando is the output (otherwise macOS handles them).
+    private func refreshControls() {
         volumeSlider.floatValue = audio.volume
         if let display { brightnessSlider.floatValue = display.normalizedBrightness }
+        keys.take(brightness: display != nil, volume: audio.isActiveOutput)
     }
 
     // MARK: Menu
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        refreshSliders()
+        refreshControls()
 
         if audio.driverInstalled {
             menu.addItem(header("Volumen"))
             menu.addItem(sliderItem(volumeSlider, symbol: "speaker.wave.2.fill"))
             let status: String
-            if audio.isRouting, let t = audio.target {
+            if let t = audio.target {
                 status = "Enviando audio a \(CA.name(t))"
+            } else if audio.isAwaitingTarget {
+                status = "En espera: volverá al monitor cuando se encienda"
             } else {
                 status = "Inactivo: la salida actual ya tiene volumen propio"
             }
@@ -234,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         let outputs = NSMenuItem(title: "Salida de audio", action: nil, keyEquivalent: "")
         let sub = NSMenu()
-        let current = audio.isRouting ? audio.target : CA.defaultOutput
+        let current = audio.target ?? CA.defaultOutput
         for dev in audio.outputDevices() {
             let item = NSMenuItem(title: CA.name(dev), action: #selector(selectOutput(_:)), keyEquivalent: "")
             item.target = self

@@ -70,21 +70,6 @@ enum CA {
     static func uid(_ dev: AudioObjectID) -> String? { string(dev, kAudioDevicePropertyDeviceUID) }
     static func name(_ dev: AudioObjectID) -> String { string(dev, kAudioObjectPropertyName) ?? "?" }
 
-    static func transportType(_ dev: AudioObjectID) -> UInt32 {
-        get(dev, address(kAudioDevicePropertyTransportType), UInt32(0)) ?? 0
-    }
-
-    /// Number of AudioBuffers the device exposes in a scope (from its stream configuration).
-    static func bufferCount(_ dev: AudioObjectID, scope: AudioObjectPropertyScope) -> UInt32 {
-        var addr = address(kAudioDevicePropertyStreamConfiguration, scope)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(dev, &addr, 0, nil, &size) == noErr, size > 0 else { return 0 }
-        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
-        defer { raw.deallocate() }
-        guard AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, raw) == noErr else { return 0 }
-        return raw.assumingMemoryBound(to: AudioBufferList.self).pointee.mNumberBuffers
-    }
-
     static func hasOutput(_ dev: AudioObjectID) -> Bool {
         !array(dev, address(kAudioDevicePropertyStreams, kAudioObjectPropertyScopeOutput), of: AudioStreamID.self).isEmpty
     }

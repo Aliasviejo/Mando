@@ -30,7 +30,5 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© Aliasviejo. MIT License.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Mando lee el audio de su propio dispositivo virtual para enviarlo a tu monitor o TV con el volumen aplicado. No graba ni accede a tu micrófono.</string>
 </dict>
 </plist>

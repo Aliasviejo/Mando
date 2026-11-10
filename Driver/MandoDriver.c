@@ -3,16 +3,21 @@
 // macOS gives HDMI / DisplayPort outputs a fixed volume, so the keyboard
 // volume keys do nothing. This AudioServerPlugIn publishes an output device
 // ("Mando") that HAS a volume and mute control. Whatever apps play into it is
-// scaled by that volume and looped back to the device's input side, where the
-// Mando app picks it up and forwards it to the real HDMI device.
+// scaled by that volume and played on the real device (the "target"), which
+// the Mando app chooses through a custom property of the device.
 //
-// Objects:  1 plug-in, 2 device, 3 output stream, 4 input stream,
-//           5 volume control, 6 mute control.
+// The driver plays on the target as an ordinary CoreAudio client. Mando has no
+// input side, so nothing ever records: no microphone permission, no indicator.
+//
+// Objects:  1 plug-in, 2 device, 3 output stream, 4 volume control, 5 mute control.
 //
 // SPDX-License-Identifier: MIT
 
 #include <CoreAudio/AudioServerPlugIn.h>
+#include <CoreAudio/CoreAudio.h>
+#include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
+#include <os/lock.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -25,10 +30,14 @@ enum {
     kObjPlugIn = kAudioObjectPlugInObject, // 1
     kObjDevice = 2,
     kObjStreamOut = 3,
-    kObjStreamIn = 4,
-    kObjVolume = 5,
-    kObjMute = 6,
+    kObjVolume = 4,
+    kObjMute = 5,
 };
+
+// Custom device property (CFString). Write: UID of the device to play on, ""
+// for none. Read: UID of the device actually being played on, "" if none.
+// Every write is answered with a change notification once it has taken effect.
+enum { kMandoPropertyTarget = 'mtgt' };
 
 #define kManufacturer       "Aliasviejo"
 #define kDeviceName         "Mando"
@@ -37,7 +46,13 @@ enum {
 #define kChannels           2
 #define kBitsPerChannel     32
 #define kBytesPerFrame      (kChannels * sizeof(Float32))
-#define kRingFrames         16384           // also the zero-timestamp period
+#define kRingFrames         16384           // power of two; also the zero-timestamp period
+#define kMaxUIDLength       256
+#define kNoWrite            INT64_MIN       // write head while no client is playing
+#define kMarginStep         256             // frames kept between the reader and the write head
+#define kMaxMargin          4096
+#define kResyncFrames       1024.0          // reader error beyond which it repositions
+#define kMaxRateTrim        1e-3f
 #define kMinDB              (-96.0f)
 #define kStorageVolumeKey   CFSTR("volume")
 #define kStorageMuteKey     CFSTR("mute")
@@ -54,14 +69,34 @@ static UInt32 gRefCount = 0;
 static Float64 gSampleRate = 48000.0;
 static Float64 gPendingSampleRate = 48000.0;
 static UInt32 gIORunning = 0;
-static Float64 gHostTicksPerFrame = 0;
-static UInt64 gAnchorHostTime = 0;
-static UInt64 gTimestampCount = 0;
+
+// Mando's clock: the zero timestamp advances one period at a time, and each
+// period is stretched by gRateTrim so Mando runs at the target's real speed.
+static os_unfair_lock gClockLock = OS_UNFAIR_LOCK_INIT;
+static Float64 gHostTicksPerFrame = 0;  // nominal
+static Float64 gZeroHost = 0;
+static SInt64 gZeroSample = 0;
+static Float64 gPeriodTicks = 0;
+static _Atomic float gRateTrim = 0.0f;
 
 static _Atomic float gVolumeScalar = 0.5f;
 static _Atomic int gMuted = 0;
 
-static Float32 *gRing = NULL; // kRingFrames * kChannels
+static Float32 *gRing = NULL;                 // kRingFrames * kChannels, by Mando sample time
+static _Atomic SInt64 gWriteHead = kNoWrite;   // sample time just past the last frame written
+
+// Forwarding to the target. Touched only on gForwardQueue, except gTargetUID (gMutex).
+static dispatch_queue_t gForwardQueue = NULL;
+static AudioObjectID gTargetDevice = kAudioObjectUnknown;
+static AudioDeviceIOProcID gTargetProc = NULL;
+static CFStringRef gTargetUID = NULL;
+
+// Reader state: the target's IO thread only (reset while its IO proc is stopped).
+static Boolean gReaderSynced = false;
+static SInt64 gReadCursor = 0;
+static Float64 gReadLead = 0;
+static Float64 gReadMargin = kMarginStep;
+static Float64 gReadErrAvg = 0;
 
 #pragma mark - Helpers
 
@@ -214,7 +249,9 @@ static ULONG Mando_Release(void *inDriver) {
 static void UpdateTicksPerFrame(void) {
     mach_timebase_info_data_t tb; mach_timebase_info(&tb);
     Float64 ticksPerSec = 1e9 * (Float64)tb.denom / (Float64)tb.numer;
+    os_unfair_lock_lock(&gClockLock);
     gHostTicksPerFrame = ticksPerSec / gSampleRate;
+    os_unfair_lock_unlock(&gClockLock);
 }
 
 static OSStatus Mando_Initialize(AudioServerPlugInDriverRef inDriver, AudioServerPlugInHostRef inHost) {
@@ -222,7 +259,9 @@ static OSStatus Mando_Initialize(AudioServerPlugInDriverRef inDriver, AudioServe
     gHost = inHost;
     LoadSettings();
     UpdateTicksPerFrame();
-    return 0;
+    if (!gRing) gRing = calloc(kRingFrames * kChannels, sizeof(Float32));
+    if (!gForwardQueue) gForwardQueue = dispatch_queue_create("mando.forward", DISPATCH_QUEUE_SERIAL);
+    return (gRing && gForwardQueue) ? 0 : kAudioHardwareUnspecifiedError;
 }
 
 static OSStatus Mando_CreateDevice(AudioServerPlugInDriverRef d, CFDictionaryRef desc, const AudioServerPlugInClientInfo *ci, AudioObjectID *out) {
@@ -251,6 +290,116 @@ static OSStatus Mando_AbortDeviceConfigurationChange(AudioServerPlugInDriverRef 
     (void)d; (void)id; (void)action; (void)info; return 0;
 }
 
+#pragma mark - Forwarding to the target
+
+// The target's IO proc: plays what Mando's clients wrote, a fixed distance
+// behind Mando's clock. The two devices run on different clocks, so the error
+// in that distance steers Mando's rate (gRateTrim) until they agree.
+static OSStatus ForwardIOProc(AudioObjectID device, const AudioTimeStamp *now, const AudioBufferList *input,
+                              const AudioTimeStamp *inputTime, AudioBufferList *output, const AudioTimeStamp *outputTime, void *ctx) {
+    (void)device; (void)input; (void)inputTime; (void)ctx;
+    if (!output || output->mNumberBuffers == 0) return 0;
+    const AudioBuffer *first = &output->mBuffers[0];
+    SInt64 frames = first->mNumberChannels ? first->mDataByteSize / (first->mNumberChannels * sizeof(Float32)) : 0;
+
+    SInt64 head = atomic_load(&gWriteHead);
+    Boolean play = (head != kNoWrite && frames > 0);
+    if (play) {
+        os_unfair_lock_lock(&gClockLock);
+        Float64 nominal = gHostTicksPerFrame, zeroHost = gZeroHost, ticksPerFrame = gPeriodTicks / kRingFrames;
+        SInt64 zeroSample = gZeroSample;
+        os_unfair_lock_unlock(&gClockLock);
+
+        UInt64 outHost = (outputTime->mFlags & kAudioTimeStampHostTimeValid) ? outputTime->mHostTime : now->mHostTime;
+        Float64 position = (Float64)zeroSample + ((Float64)outHost - zeroHost) / ticksPerFrame; // Mando's sample time at outHost
+        Float64 err = position - gReadLead - (Float64)gReadCursor;
+        if (!gReaderSynced || fabs(err) > kResyncFrames) {
+            Float64 ahead = outHost > now->mHostTime ? (Float64)(outHost - now->mHostTime) / nominal : 0;
+            gReadLead = ahead + (Float64)frames + gReadMargin;
+            gReadCursor = (SInt64)floor(position - gReadLead);
+            gReadErrAvg = 0;
+            gReaderSynced = true;
+            err = 0;
+        }
+        if (gReadCursor + frames > head) {
+            // The clients have not written this far yet: play silence and keep more distance.
+            // ponytail: the margin only grows (up to 85 ms at 48 kHz) until the target is set again.
+            play = false;
+            gReaderSynced = false;
+            if (gReadMargin < kMaxMargin) gReadMargin += kMarginStep;
+        } else {
+            // err > 0: Mando runs fast, so its periods get longer.
+            gReadErrAvg += (err - gReadErrAvg) * 0.01;
+            Float64 trim = gReadErrAvg * 1e-6;
+            atomic_store(&gRateTrim, (float)fmax(-kMaxRateTrim, fmin(kMaxRateTrim, trim)));
+        }
+    } else {
+        gReaderSynced = false;
+    }
+
+    // L/R go to the target's first two channels, however it lays out its buffers; silence elsewhere.
+    UInt32 channel = 0;
+    for (UInt32 bi = 0; bi < output->mNumberBuffers; bi++) {
+        AudioBuffer *b = &output->mBuffers[bi];
+        UInt32 ch = b->mNumberChannels;
+        if (!b->mData || ch == 0) continue;
+        Float32 *dst = b->mData;
+        SInt64 n = b->mDataByteSize / (ch * sizeof(Float32));
+        for (UInt32 c = 0; c < ch; c++, channel++) {
+            Boolean copy = play && channel < kChannels;
+            for (SInt64 f = 0; f < n; f++) {
+                // The mask also wraps cursors below zero (kRingFrames is a power of two).
+                dst[f * ch + c] = (copy && f < frames) ? gRing[((UInt64)(gReadCursor + f) & (kRingFrames - 1)) * kChannels + channel] : 0;
+            }
+        }
+    }
+    if (play) gReadCursor += frames;
+    return 0;
+}
+
+// gForwardQueue only.
+static void StopForwarding(void) {
+    if (gTargetProc) {
+        AudioDeviceStop(gTargetDevice, gTargetProc);
+        AudioDeviceDestroyIOProcID(gTargetDevice, gTargetProc);
+        gTargetProc = NULL;
+    }
+    gTargetDevice = kAudioObjectUnknown;
+    pthread_mutex_lock(&gMutex);
+    if (gTargetUID) { CFRelease(gTargetUID); gTargetUID = NULL; }
+    pthread_mutex_unlock(&gMutex);
+    atomic_store(&gRateTrim, 0.0f);
+}
+
+// gForwardQueue only. Plays on the device with that UID ("" = none) and tells the app the outcome.
+static void SetTarget(CFStringRef uid) {
+    StopForwarding();
+    if (CFStringGetLength(uid) > 0) {
+        AudioObjectPropertyAddress a = { kAudioHardwarePropertyTranslateUIDToDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+        AudioObjectID dev = kAudioObjectUnknown;
+        UInt32 size = sizeof(dev);
+        OSStatus err = AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, sizeof(uid), &uid, &size, &dev);
+        if (!err && dev == kAudioObjectUnknown) err = kAudioHardwareBadDeviceError;
+        if (!err) {
+            gReaderSynced = false;
+            gReadMargin = kMarginStep;
+            err = AudioDeviceCreateIOProcID(dev, ForwardIOProc, NULL, &gTargetProc);
+        }
+        if (!err) {
+            gTargetDevice = dev;
+            err = AudioDeviceStart(dev, gTargetProc);
+            if (err) {
+                StopForwarding();
+            } else {
+                pthread_mutex_lock(&gMutex);
+                gTargetUID = CFRetain(uid);
+                pthread_mutex_unlock(&gMutex);
+            }
+        }
+    }
+    NotifyChanged(kObjDevice, kMandoPropertyTarget, kAudioObjectPropertyScopeGlobal);
+}
+
 #pragma mark - Property dispatch
 
 static Boolean IsKnownObject(AudioObjectID id) { return id >= kObjPlugIn && id <= kObjMute; }
@@ -267,8 +416,8 @@ static OSStatus Mando_IsPropertySettable(AudioServerPlugInDriverRef d, AudioObje
     if (!Mando_HasProperty(d, obj, pid, a)) return kAudioHardwareUnknownPropertyError;
     Boolean s = false;
     switch (obj) {
-        case kObjDevice: s = (a->mSelector == kAudioDevicePropertyNominalSampleRate); break;
-        case kObjStreamOut: case kObjStreamIn:
+        case kObjDevice: s = (a->mSelector == kAudioDevicePropertyNominalSampleRate || a->mSelector == kMandoPropertyTarget); break;
+        case kObjStreamOut:
             s = (a->mSelector == kAudioStreamPropertyVirtualFormat || a->mSelector == kAudioStreamPropertyPhysicalFormat ||
                  a->mSelector == kAudioStreamPropertyIsActive); break;
         case kObjVolume: s = (a->mSelector == kAudioLevelControlPropertyScalarValue || a->mSelector == kAudioLevelControlPropertyDecibelValue); break;
@@ -278,15 +427,11 @@ static OSStatus Mando_IsPropertySettable(AudioServerPlugInDriverRef d, AudioObje
     return 0;
 }
 
-static UInt32 StreamCountForScope(AudioObjectPropertyScope scope) {
-    if (scope == kAudioObjectPropertyScopeGlobal) return 2;
-    return 1;
-}
-
 static OSStatus Mando_GetPropertyDataSize(AudioServerPlugInDriverRef d, AudioObjectID obj, pid_t pid, const AudioObjectPropertyAddress *a, UInt32 qs, const void *q, UInt32 *out) {
     (void)pid; (void)qs; (void)q;
     if (d != gDriverRef || !a || !out) return kAudioHardwareBadObjectError;
     const UInt32 kCF = sizeof(CFStringRef), kID = sizeof(AudioObjectID), kU = sizeof(UInt32);
+    const Boolean isInput = (a->mScope == kAudioObjectPropertyScopeInput); // Mando has no input side
     switch (a->mSelector) {
         case kAudioObjectPropertyBaseClass: case kAudioObjectPropertyClass: *out = sizeof(AudioClassID); return 0;
         case kAudioObjectPropertyOwner: *out = kID; return 0;
@@ -302,9 +447,10 @@ static OSStatus Mando_GetPropertyDataSize(AudioServerPlugInDriverRef d, AudioObj
         case kObjDevice:
             switch (a->mSelector) {
                 case kAudioObjectPropertyName: case kAudioObjectPropertyManufacturer:
-                case kAudioDevicePropertyDeviceUID: case kAudioDevicePropertyModelUID: *out = kCF; return 0;
-                case kAudioObjectPropertyOwnedObjects:
-                    *out = (a->mScope == kAudioObjectPropertyScopeGlobal ? 4 : (a->mScope == kAudioObjectPropertyScopeOutput ? 3 : 1)) * kID; return 0;
+                case kAudioDevicePropertyDeviceUID: case kAudioDevicePropertyModelUID:
+                case kMandoPropertyTarget: *out = kCF; return 0;
+                case kAudioObjectPropertyCustomPropertyInfoList: *out = sizeof(AudioServerPlugInCustomPropertyInfo); return 0;
+                case kAudioObjectPropertyOwnedObjects: *out = (isInput ? 0 : 3) * kID; return 0;
                 case kAudioDevicePropertyTransportType: case kAudioDevicePropertyClockDomain:
                 case kAudioDevicePropertyDeviceIsAlive: case kAudioDevicePropertyDeviceIsRunning:
                 case kAudioDevicePropertyDeviceCanBeDefaultDevice: case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
@@ -313,7 +459,7 @@ static OSStatus Mando_GetPropertyDataSize(AudioServerPlugInDriverRef d, AudioObj
                 case kAudioDevicePropertyClockIsStable:
                     *out = kU; return 0;
                 case kAudioDevicePropertyRelatedDevices: *out = kID; return 0;
-                case kAudioDevicePropertyStreams: *out = StreamCountForScope(a->mScope) * kID; return 0;
+                case kAudioDevicePropertyStreams: *out = (isInput ? 0 : 1) * kID; return 0;
                 case kAudioObjectPropertyControlList: *out = 2 * kID; return 0;
                 case kAudioDevicePropertyNominalSampleRate: *out = sizeof(Float64); return 0;
                 case kAudioDevicePropertyAvailableNominalSampleRates: *out = kNumSampleRates * sizeof(AudioValueRange); return 0;
@@ -322,7 +468,7 @@ static OSStatus Mando_GetPropertyDataSize(AudioServerPlugInDriverRef d, AudioObj
                     *out = offsetof(AudioChannelLayout, mChannelDescriptions) + kChannels * sizeof(AudioChannelDescription); return 0;
             }
             break;
-        case kObjStreamOut: case kObjStreamIn:
+        case kObjStreamOut:
             switch (a->mSelector) {
                 case kAudioObjectPropertyOwnedObjects: *out = 0; return 0;
                 case kAudioStreamPropertyIsActive: case kAudioStreamPropertyDirection: case kAudioStreamPropertyTerminalType:
@@ -380,7 +526,7 @@ static OSStatus Mando_GetPropertyData(AudioServerPlugInDriverRef d, AudioObjectI
             AudioClassID c = kAudioPlugInClassID;
             switch (obj) {
                 case kObjDevice: c = kAudioDeviceClassID; break;
-                case kObjStreamOut: case kObjStreamIn: c = kAudioStreamClassID; break;
+                case kObjStreamOut: c = kAudioStreamClassID; break;
                 case kObjVolume: c = kAudioVolumeControlClassID; break;
                 case kObjMute: c = kAudioMuteControlClassID; break;
             }
@@ -421,14 +567,26 @@ static OSStatus Mando_GetPropertyData(AudioServerPlugInDriverRef d, AudioObjectI
                     CHECK_SIZE(sizeof(CFStringRef)); *(CFStringRef *)outData = CFSTR(kDeviceUID); *outSize = sizeof(CFStringRef); return 0;
                 case kAudioDevicePropertyModelUID:
                     CHECK_SIZE(sizeof(CFStringRef)); *(CFStringRef *)outData = CFSTR(kDeviceModelUID); *outSize = sizeof(CFStringRef); return 0;
+                case kMandoPropertyTarget:
+                    CHECK_SIZE(sizeof(CFStringRef));
+                    pthread_mutex_lock(&gMutex);
+                    *(CFStringRef *)outData = gTargetUID ? CFRetain(gTargetUID) : CFSTR(""); // the caller releases it
+                    pthread_mutex_unlock(&gMutex);
+                    *outSize = sizeof(CFStringRef); return 0;
+                case kAudioObjectPropertyCustomPropertyInfoList: {
+                    CHECK_SIZE(sizeof(AudioServerPlugInCustomPropertyInfo));
+                    AudioServerPlugInCustomPropertyInfo *i = outData;
+                    i->mSelector = kMandoPropertyTarget;
+                    i->mPropertyDataType = kAudioServerPlugInCustomPropertyDataTypeCFString;
+                    i->mQualifierDataType = kAudioServerPlugInCustomPropertyDataTypeNone;
+                    *outSize = sizeof(*i); return 0;
+                }
                 case kAudioObjectPropertyOwnedObjects:
-                    if (a->mScope == kAudioObjectPropertyScopeInput) RETURN_IDS(kObjStreamIn);
-                    if (a->mScope == kAudioObjectPropertyScopeOutput) RETURN_IDS(kObjStreamOut, kObjVolume, kObjMute);
-                    RETURN_IDS(kObjStreamOut, kObjStreamIn, kObjVolume, kObjMute);
+                    if (need == 0) { *outSize = 0; return 0; }
+                    RETURN_IDS(kObjStreamOut, kObjVolume, kObjMute);
                 case kAudioDevicePropertyStreams:
-                    if (a->mScope == kAudioObjectPropertyScopeInput) RETURN_IDS(kObjStreamIn);
-                    if (a->mScope == kAudioObjectPropertyScopeOutput) RETURN_IDS(kObjStreamOut);
-                    RETURN_IDS(kObjStreamOut, kObjStreamIn);
+                    if (need == 0) { *outSize = 0; return 0; }
+                    RETURN_IDS(kObjStreamOut);
                 case kAudioObjectPropertyControlList:
                     RETURN_IDS(kObjVolume, kObjMute);
                 case kAudioDevicePropertyRelatedDevices:
@@ -443,7 +601,6 @@ static OSStatus Mando_GetPropertyData(AudioServerPlugInDriverRef d, AudioObjectI
                     CHECK_SIZE(4); pthread_mutex_lock(&gMutex); *(UInt32 *)outData = gIORunning > 0; pthread_mutex_unlock(&gMutex); *outSize = 4; return 0;
                 case kAudioDevicePropertyDeviceCanBeDefaultDevice:
                 case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
-                    // Output only: the loopback input must never become the Mac's microphone.
                     CHECK_SIZE(4); *(UInt32 *)outData = (a->mScope == kAudioObjectPropertyScopeInput) ? 0 : 1; *outSize = 4; return 0;
                 case kAudioDevicePropertyLatency: case kAudioDevicePropertySafetyOffset:
                     CHECK_SIZE(4); *(UInt32 *)outData = 0; *outSize = 4; return 0;
@@ -476,14 +633,13 @@ static OSStatus Mando_GetPropertyData(AudioServerPlugInDriverRef d, AudioObjectI
             }
             break;
 
-        case kObjStreamOut: case kObjStreamIn: {
-            Boolean isIn = (obj == kObjStreamIn);
+        case kObjStreamOut:
             switch (a->mSelector) {
                 case kAudioObjectPropertyOwnedObjects: *outSize = 0; return 0;
                 case kAudioStreamPropertyIsActive: CHECK_SIZE(4); *(UInt32 *)outData = 1; *outSize = 4; return 0;
-                case kAudioStreamPropertyDirection: CHECK_SIZE(4); *(UInt32 *)outData = isIn ? 1 : 0; *outSize = 4; return 0;
+                case kAudioStreamPropertyDirection: CHECK_SIZE(4); *(UInt32 *)outData = 0; *outSize = 4; return 0;
                 case kAudioStreamPropertyTerminalType:
-                    CHECK_SIZE(4); *(UInt32 *)outData = isIn ? kAudioStreamTerminalTypeMicrophone : kAudioStreamTerminalTypeSpeaker; *outSize = 4; return 0;
+                    CHECK_SIZE(4); *(UInt32 *)outData = kAudioStreamTerminalTypeSpeaker; *outSize = 4; return 0;
                 case kAudioStreamPropertyStartingChannel: CHECK_SIZE(4); *(UInt32 *)outData = 1; *outSize = 4; return 0;
                 case kAudioStreamPropertyLatency: CHECK_SIZE(4); *(UInt32 *)outData = 0; *outSize = 4; return 0;
                 case kAudioStreamPropertyVirtualFormat: case kAudioStreamPropertyPhysicalFormat:
@@ -502,7 +658,6 @@ static OSStatus Mando_GetPropertyData(AudioServerPlugInDriverRef d, AudioObjectI
                 }
             }
             break;
-        }
 
         case kObjVolume:
             switch (a->mSelector) {
@@ -557,9 +712,21 @@ static OSStatus Mando_SetPropertyData(AudioServerPlugInDriverRef d, AudioObjectI
                 if (changed && gHost) gHost->RequestDeviceConfigurationChange(gHost, kObjDevice, 0, NULL);
                 return 0;
             }
+            if (a->mSelector == kMandoPropertyTarget) {
+                CHECK_SIZE(sizeof(CFStringRef));
+                CFStringRef uid = *(const CFStringRef *)inData;
+                if (!uid || CFGetTypeID(uid) != CFStringGetTypeID() || CFStringGetLength(uid) > kMaxUIDLength ||
+                    CFEqual(uid, CFSTR(kDeviceUID)))
+                    return kAudioHardwareIllegalOperationError;
+                CFStringRef copy = CFStringCreateCopy(NULL, uid);
+                if (!copy) return kAudioHardwareUnspecifiedError;
+                // Being a client of another device is not allowed on this thread.
+                dispatch_async(gForwardQueue, ^{ SetTarget(copy); CFRelease(copy); });
+                return 0;
+            }
             break;
 
-        case kObjStreamOut: case kObjStreamIn:
+        case kObjStreamOut:
             if (a->mSelector == kAudioStreamPropertyVirtualFormat || a->mSelector == kAudioStreamPropertyPhysicalFormat) {
                 CHECK_SIZE(sizeof(AudioStreamBasicDescription));
                 const AudioStreamBasicDescription *f = inData;
@@ -610,21 +777,23 @@ static OSStatus Mando_StartIO(AudioServerPlugInDriverRef d, AudioObjectID id, UI
     if (d != gDriverRef || id != kObjDevice) return kAudioHardwareBadObjectError;
     pthread_mutex_lock(&gMutex);
     if (gIORunning == 0) {
-        if (!gRing) gRing = calloc(kRingFrames * kChannels, sizeof(Float32));
-        else memset(gRing, 0, kRingFrames * kBytesPerFrame);
-        gTimestampCount = 0;
-        gAnchorHostTime = mach_absolute_time();
+        memset(gRing, 0, kRingFrames * kBytesPerFrame);
+        os_unfair_lock_lock(&gClockLock);
+        gZeroHost = (Float64)mach_absolute_time();
+        gZeroSample = 0;
+        gPeriodTicks = gHostTicksPerFrame * kRingFrames;
+        os_unfair_lock_unlock(&gClockLock);
     }
     gIORunning++;
     pthread_mutex_unlock(&gMutex);
-    return gRing ? 0 : kAudioHardwareUnspecifiedError;
+    return 0;
 }
 
 static OSStatus Mando_StopIO(AudioServerPlugInDriverRef d, AudioObjectID id, UInt32 client) {
     (void)client;
     if (d != gDriverRef || id != kObjDevice) return kAudioHardwareBadObjectError;
     pthread_mutex_lock(&gMutex);
-    if (gIORunning > 0) gIORunning--;
+    if (gIORunning > 0 && --gIORunning == 0) atomic_store(&gWriteHead, kNoWrite);
     pthread_mutex_unlock(&gMutex);
     return 0;
 }
@@ -632,22 +801,23 @@ static OSStatus Mando_StopIO(AudioServerPlugInDriverRef d, AudioObjectID id, UIn
 static OSStatus Mando_GetZeroTimeStamp(AudioServerPlugInDriverRef d, AudioObjectID id, UInt32 client, Float64 *outSampleTime, UInt64 *outHostTime, UInt64 *outSeed) {
     (void)client;
     if (d != gDriverRef || id != kObjDevice) return kAudioHardwareBadObjectError;
-    pthread_mutex_lock(&gMutex);
-    UInt64 now = mach_absolute_time();
-    Float64 ticksPerPeriod = gHostTicksPerFrame * (Float64)kRingFrames;
-    UInt64 nextPeriodHostTime = gAnchorHostTime + (UInt64)((Float64)(gTimestampCount + 1) * ticksPerPeriod);
-    if (nextPeriodHostTime <= now) gTimestampCount++;
-    *outSampleTime = (Float64)(gTimestampCount * kRingFrames);
-    *outHostTime = gAnchorHostTime + (UInt64)((Float64)gTimestampCount * ticksPerPeriod);
+    os_unfair_lock_lock(&gClockLock);
+    if ((Float64)mach_absolute_time() >= gZeroHost + gPeriodTicks) {
+        gZeroHost += gPeriodTicks;
+        gZeroSample += kRingFrames;
+        gPeriodTicks = gHostTicksPerFrame * kRingFrames * (1.0 + (Float64)atomic_load(&gRateTrim));
+    }
+    *outSampleTime = (Float64)gZeroSample;
+    *outHostTime = (UInt64)gZeroHost;
     *outSeed = 1;
-    pthread_mutex_unlock(&gMutex);
+    os_unfair_lock_unlock(&gClockLock);
     return 0;
 }
 
 static OSStatus Mando_WillDoIOOperation(AudioServerPlugInDriverRef d, AudioObjectID id, UInt32 client, UInt32 op, Boolean *outWill, Boolean *outInPlace) {
     (void)client;
     if (d != gDriverRef || id != kObjDevice) return kAudioHardwareBadObjectError;
-    *outWill = (op == kAudioServerPlugInIOOperationReadInput || op == kAudioServerPlugInIOOperationWriteMix);
+    *outWill = (op == kAudioServerPlugInIOOperationWriteMix);
     *outInPlace = true;
     return 0;
 }
@@ -662,30 +832,30 @@ static OSStatus Mando_EndIOOperation(AudioServerPlugInDriverRef d, AudioObjectID
     return (d == gDriverRef && id == kObjDevice) ? 0 : kAudioHardwareBadObjectError;
 }
 
+static inline Float32 *RingFrame(SInt64 sampleTime) {
+    return &gRing[((UInt64)sampleTime & (kRingFrames - 1)) * kChannels];
+}
+
 static OSStatus Mando_DoIOOperation(AudioServerPlugInDriverRef d, AudioObjectID id, AudioObjectID stream, UInt32 client, UInt32 op,
                                     UInt32 frames, const AudioServerPlugInIOCycleInfo *info, void *mainBuf, void *secondaryBuf) {
     (void)client; (void)secondaryBuf;
     if (d != gDriverRef || id != kObjDevice) return kAudioHardwareBadObjectError;
-    if (!gRing || !mainBuf) return 0;
-    Float32 *buf = mainBuf;
+    if (op != kAudioServerPlugInIOOperationWriteMix || stream != kObjStreamOut || !mainBuf) return 0;
+    const Float32 *buf = mainBuf;
+    float g = atomic_load(&gMuted) ? 0.0f : ScalarToGain(atomic_load(&gVolumeScalar));
+    SInt64 start = (SInt64)info->mOutputTime.mSampleTime;
 
-    if (op == kAudioServerPlugInIOOperationWriteMix && stream == kObjStreamOut) {
-        float g = atomic_load(&gMuted) ? 0.0f : ScalarToGain(atomic_load(&gVolumeScalar));
-        UInt64 start = (UInt64)info->mOutputTime.mSampleTime;
-        for (UInt32 i = 0; i < frames; i++) {
-            UInt64 idx = ((start + i) % kRingFrames) * kChannels;
-            gRing[idx]     = buf[i * kChannels]     * g;
-            gRing[idx + 1] = buf[i * kChannels + 1] * g;
-        }
-    } else if (op == kAudioServerPlugInIOOperationReadInput && stream == kObjStreamIn) {
-        UInt64 start = (UInt64)info->mInputTime.mSampleTime;
-        for (UInt32 i = 0; i < frames; i++) {
-            UInt64 idx = ((start + i) % kRingFrames) * kChannels;
-            buf[i * kChannels]     = gRing[idx];
-            buf[i * kChannels + 1] = gRing[idx + 1];
-            // Clear after reading so a stalled writer yields silence, not a loop.
-            gRing[idx] = 0; gRing[idx + 1] = 0;
-        }
+    // The reader does not erase what it plays, so a skipped stretch is silenced here.
+    SInt64 head = atomic_load(&gWriteHead);
+    if (head != kNoWrite && start > head) {
+        SInt64 gap = start - head < kRingFrames ? start - head : kRingFrames;
+        for (SInt64 i = 0; i < gap; i++) { Float32 *f = RingFrame(head + i); f[0] = 0; f[1] = 0; }
     }
+    for (UInt32 i = 0; i < frames; i++) {
+        Float32 *f = RingFrame(start + i);
+        f[0] = buf[i * kChannels]     * g;
+        f[1] = buf[i * kChannels + 1] * g;
+    }
+    atomic_store(&gWriteHead, start + (SInt64)frames);
     return 0;
 }

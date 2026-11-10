@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.0.0}"   # local builds; release.sh sets the real one
 SIGN_ID="${SIGN_ID:--}"
 MIN_OS=14.0
 ARCHS=(arm64 x86_64)
@@ -18,11 +18,10 @@ APP="$OUT/Mando.app/Contents"
 rm -rf "$OUT/Mando.app" "$OUT/Mando.driver" "$OUT/obj"
 mkdir -p "$OUT/obj"
 
-sign() { # path [entitlements]
+sign() { # path
   # Hardened runtime also when ad-hoc, so release.sh can re-sign this build as is.
   local args=(--force --options runtime --sign "$SIGN_ID")
   [[ "$SIGN_ID" != "-" ]] && args+=(--timestamp)
-  [[ $# -gt 1 ]] && args+=(--entitlements "$2")
   codesign "${args[@]}" "$1"
 }
 
@@ -40,11 +39,10 @@ mkdir -p "$APP/MacOS" "$APP/Resources"
 BIN=()
 for arch in "${ARCHS[@]}"; do
   target="$arch-apple-macos$MIN_OS"
-  clang -target "$target" -O2 -Wall -c App/Bridge/Router.c -IApp/Bridge -o "$OUT/obj/Router-$arch.o"
   clang -target "$target" -O2 -Wall -fobjc-arc -c App/Bridge/OSD.m -IApp/Bridge -o "$OUT/obj/OSD-$arch.o"
   swiftc -target "$target" -O \
     -import-objc-header App/Bridge/Mando-Bridging-Header.h \
-    App/Sources/*.swift "$OUT/obj/Router-$arch.o" "$OUT/obj/OSD-$arch.o" \
+    App/Sources/*.swift "$OUT/obj/OSD-$arch.o" \
     -framework AppKit -framework CoreAudio -framework IOKit -framework ServiceManagement -framework ApplicationServices \
     -o "$OUT/obj/Mando-$arch"
   BIN+=("$OUT/obj/Mando-$arch")
@@ -52,6 +50,6 @@ done
 lipo -create "${BIN[@]}" -output "$APP/MacOS/Mando"
 sed "s/__VERSION__/$VERSION/g" App/Info.plist > "$APP/Info.plist"
 [[ -f App/AppIcon.icns ]] && cp App/AppIcon.icns "$APP/Resources/" || true
-sign "$OUT/Mando.app" App/Mando.entitlements
+sign "$OUT/Mando.app"
 
 echo "==> Done: $OUT/Mando.app with its driver (v$VERSION, signed with: $SIGN_ID)"
