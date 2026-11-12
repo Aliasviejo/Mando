@@ -1,7 +1,7 @@
 #!/bin/bash
 # Release build: Developer ID signed (cloud-managed certificate), notarized and stapled.
 #
-#   VERSION=0.3.0 ./scripts/release.sh
+#   VERSION=0.3.1 ./scripts/release.sh
 #
 # Needs:
 #   - Xcode signed in (Settings → Apple Accounts) with an account that has
@@ -9,15 +9,15 @@
 #   - An App Store Connect API key for notarytool, in these variables:
 #     APPSTORECONNECT_PRIVATE_KEY_PATH, APPSTORECONNECT_KEY_ID, APPSTORECONNECT_ISSUER_ID
 #
-# Output: build/release/$VERSION/Mando.app (stapled) and Mando.zip; other versions are left alone
+# Output: build.noindex/release/$VERSION/Mando.app (stapled) and Mando.zip; other versions are left alone
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-: "${VERSION:?set VERSION, e.g. VERSION=0.3.0 ./scripts/release.sh}"
+: "${VERSION:?set VERSION, e.g. VERSION=0.3.1 ./scripts/release.sh}"
 : "${APPSTORECONNECT_PRIVATE_KEY_PATH:?set the App Store Connect API key variables (see header)}"
 : "${APPSTORECONNECT_KEY_ID:?}" "${APPSTORECONNECT_ISSUER_ID:?}"
 
-OUT="build/release/$VERSION"
+OUT="build.noindex/release/$VERSION"
 ARCHIVE="$OUT/Mando.xcarchive"
 rm -rf "$OUT"
 
@@ -27,7 +27,7 @@ VERSION="$VERSION" ./scripts/build.sh
 # with the cloud-managed Developer ID (codesign can't reach that private key).
 echo "==> Archive"
 mkdir -p "$ARCHIVE/Products/Applications"
-cp -R build/Mando.app "$ARCHIVE/Products/Applications/"
+cp -R build.noindex/Mando.app "$ARCHIVE/Products/Applications/"
 cat > "$ARCHIVE/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -69,6 +69,8 @@ echo "==> Staple and verify"
 xcrun stapler staple "$OUT/Mando.app"
 codesign --verify --deep --strict "$OUT/Mando.app"
 spctl -a -t exec -vv "$OUT/Mando.app" 2>&1 | tee /dev/stderr | grep -q "source=Notarized Developer ID"
+# The checks above register this copy with LaunchServices: a second Mando in Apps.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$PWD/$OUT/Mando.app" || true
 rm "$ZIP" && ditto -c -k --keepParent "$OUT/Mando.app" "$ZIP"   # zip again, now with the ticket
 
 echo "==> Done: $ZIP"

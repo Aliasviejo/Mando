@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds build/Mando.app (universal: arm64 + x86_64). The audio driver ships
+# Builds build.noindex/Mando.app (universal: arm64 + x86_64). The audio driver ships
 # inside it, at Contents/PlugIns/Mando.driver; install.sh copies it to HAL.
 #
 #   ./scripts/build.sh                    # ad-hoc signed, for local testing
@@ -13,7 +13,7 @@ VERSION="${VERSION:-0.0.0}"   # local builds; release.sh sets the real one
 SIGN_ID="${SIGN_ID:--}"
 MIN_OS=14.0
 ARCHS=(arm64 x86_64)
-OUT=build
+OUT=build.noindex   # .noindex: Spotlight skips it, so builds do not show up as a second Mando in Apps
 APP="$OUT/Mando.app/Contents"
 rm -rf "$OUT/Mando.app" "$OUT/Mando.driver" "$OUT/obj"
 mkdir -p "$OUT/obj"

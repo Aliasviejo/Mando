@@ -19,7 +19,7 @@ Existing workarounds change the volume **on the monitor itself** over DDC. That 
 - **Volume, the Mac way.** Mando installs a tiny virtual audio device with a real volume control. Audio goes through it and on to your HDMI device. The volume keys change the Mac's volume and show the macOS volume indicator. The monitor's volume stays where you set it and acts as a ceiling, and the monitor never shows its own bar.
 - **Brightness over DDC/CI.** The brightness keys change the monitor's real backlight and show the macOS brightness indicator. Hold <kbd>⇧</kbd><kbd>⌥</kbd> for finer steps.
 - **Automatic.** Pick your monitor as the output and Mando wraps it. Pick speakers or AirPods (devices that already have volume) and Mando gets out of the way.
-- **Menu bar.** Volume and brightness sliders, an output picker and launch at login.
+- **Menu bar.** Volume and brightness sliders and an output picker. Mando opens at login, so it is still there after a restart; you can turn that off in the menu.
 
 ## Keyboards
 
@@ -74,19 +74,19 @@ You need Xcode (or the Command Line Tools).
 
 ```bash
 ./scripts/build.sh          # ad-hoc signed, for local use
-./scripts/install.sh        # or just open build/Mando.app
+./scripts/install.sh        # or just open build.noindex/Mando.app
 ```
 
 The driver's playback and clock logic has a test that runs in simulated time:
 
 ```bash
-clang -O2 -framework CoreFoundation -framework CoreAudio tests/forwarding_test.c -o build/forwarding_test && build/forwarding_test
+clang -O2 -framework CoreFoundation -framework CoreAudio tests/forwarding_test.c -o build.noindex/forwarding_test && build.noindex/forwarding_test
 ```
 
 Release build, signed with Developer ID, notarized and stapled (requirements in the script header):
 
 ```bash
-VERSION=0.3.0 ./scripts/release.sh   # → build/release/0.3.0/Mando.zip
+VERSION=0.3.1 ./scripts/release.sh   # → build.noindex/release/0.3.1/Mando.zip
 ```
 
 ## How it works
@@ -119,6 +119,7 @@ Cuando la Mac manda el audio por HDMI o DisplayPort, macOS bloquea el volumen: l
 - **Volumen como en la Mac:** un dispositivo de audio virtual con volumen real. Las teclas mueven el volumen de macOS con el indicador de macOS. El volumen del monitor queda fijo como tope, y el monitor no muestra su indicador.
 - **Brillo por DDC/CI:** las teclas de brillo cambian el brillo real del monitor, con el indicador de macOS. Con <kbd>⇧</kbd><kbd>⌥</kbd> los pasos son más finos.
 - **Automático:** si eliges el monitor como salida, Mando se encarga. Con parlantes o AirPods se hace a un lado.
+- **Barra de menú:** controles de volumen y brillo y selector de salida. Mando se abre al iniciar sesión, así sigue ahí después de reiniciar; puedes desactivarlo en el menú.
 
 ### Teclados
 Funciona sin Logi Options+ ni otro programa del teclado.

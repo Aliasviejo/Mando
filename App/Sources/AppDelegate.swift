@@ -58,9 +58,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(displaysChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
+        enableLoginOnce()
+
         if DriverInstaller.needsInstall {
             DispatchQueue.main.async { [weak self] in self?.offerDriverInstall() }
         }
+    }
+
+    /// Without the app running, a restart leaves the Mac on its own speakers,
+    /// so the first launch of the installed app turns "open at login" on.
+    /// Only once: turning it off in the menu sticks.
+    private func enableLoginOnce() {
+        let key = "loginItemSet"
+        guard !UserDefaults.standard.bool(forKey: key), Bundle.main.bundlePath.hasPrefix("/Applications/") else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        if SMAppService.mainApp.status != .enabled { toggleLogin() }
     }
 
     // MARK: Driver
