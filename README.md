@@ -86,7 +86,7 @@ clang -O2 -framework CoreFoundation -framework CoreAudio tests/forwarding_test.c
 Release build, signed with Developer ID, notarized and stapled (requirements in the script header):
 
 ```bash
-VERSION=0.3.1 ./scripts/release.sh   # → build.noindex/release/0.3.1/Mando.zip
+VERSION=0.3.2 ./scripts/release.sh   # → build.noindex/release/0.3.2/Mando.zip
 ```
 
 ## How it works

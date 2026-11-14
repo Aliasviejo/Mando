@@ -30,6 +30,9 @@ final class AudioRouter {
     private var pending: String?
     /// UID the driver could not play on; not asked again until the devices change.
     private var refused: String?
+    /// Retries already spent on the awaited device; HDMI can refuse IO for a moment after it returns.
+    private var retries = 0
+    private static let maxRetries = 5 // 1+2+4+8+16 s
     /// UID of the device we left only because it disappeared, and the output used meanwhile.
     private var awaitedUID: String?
     private var fallback: AudioObjectID = 0
@@ -111,12 +114,30 @@ final class AudioRouter {
         let playing = CA.string(mando, Self.targetProperty.mSelector) ?? ""
         if playing == asked {
             target = asked.isEmpty ? nil : CA.device(withUID: asked)
-            if target != nil { UserDefaults.standard.set(asked, forKey: Self.savedTargetKey) }
+            if target != nil {
+                retries = 0
+                UserDefaults.standard.set(asked, forKey: Self.savedTargetKey)
+            }
         } else {
             Log.info("the driver could not play on \(asked)")
             refused = asked
+            if asked == awaitedUID { retryAwaited(asked) }
         }
         evaluate()
+    }
+
+    /// The display that came back refused IO (it often does for a moment after
+    /// waking): ask again a few times instead of staying on the fallback.
+    private func retryAwaited(_ uid: String) {
+        guard retries < Self.maxRetries else { return }
+        let delay = Double(1 << retries)
+        retries += 1
+        Log.info("retrying \(uid) in \(Int(delay)) s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.refused == uid, self.awaitedUID == uid else { return }
+            self.refused = nil
+            self.evaluate()
+        }
     }
 
     private func clearTarget() {
@@ -130,6 +151,7 @@ final class AudioRouter {
     private func devicesChanged() {
         if let t = target, !CA.allDevices().contains(t) { clearTarget() }
         refused = nil
+        retries = 0
         evaluate()
     }
 
